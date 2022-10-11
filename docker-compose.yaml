@@ -1,0 +1,167 @@
+version: '3.9'
+
+services:
+  gitlab:
+    container_name: gitlab
+    image: 'gitlab/gitlab-ce:${GITLAB_VERSION}'
+    restart: always
+    hostname: '${GITLAB_HOSTNAME}'
+    links:
+      - postgresql:postgresql
+      - redis:redis
+    environment:
+      GITLAB_OMNIBUS_CONFIG: |
+        external_url 'https://${GITLAB_HOSTNAME}'
+        letsencrypt['enable'] = false
+        nginx['ssl_certificate'] = "/etc/gitlab/ssl/ssl.crt"
+        nginx['ssl_certificate_key'] = "/etc/gitlab/ssl/ssl.key"
+
+        postgresql['enable'] = false
+        gitlab_rails['db_username'] = "${POSTGRES_USER}"
+        gitlab_rails['db_password'] = "${POSTGRES_PASSWORD}"
+        gitlab_rails['db_host'] = "postgresql"
+        gitlab_rails['db_port'] = "5432"
+        gitlab_rails['db_database'] = "${POSTGRES_GITLAB_DB}"
+        gitlab_rails['db_adapter'] = 'postgresql'
+        gitlab_rails['db_encoding'] = 'utf8'
+
+        gitlab_rails['packages_enabled'] = true
+        gitlab_rails['packages_storage_path'] = "/var/opt/gitlab/gitlab-rails/shared/packages"
+
+        external_url 'https://${GITLAB_HOSTNAME}'
+        registry_external_url 'https://${GITLAB_HOSTNAME}:5050'
+        nginx['redirect_http_to_https'] = true
+        registry_nginx['enable'] = true
+        registry_nginx['listen_port'] = 5050
+        registry_nginx['ssl_certificate'] = '/etc/gitlab/ssl/ssl.crt'
+        registry_nginx['ssl_certificate_key'] = '/etc/gitlab/ssl/ssl.key'
+
+        redis['enable'] = false
+        gitlab_rails['redis_host'] = 'redis'
+        gitlab_rails['redis_port'] = '6379'
+        gitlab_rails['gitlab_shell_ssh_port'] = 22
+
+        gitlab_rails['time_zone'] = 'Asia/Almaty'
+
+        gitlab_rails['smtp_enable'] = true
+        gitlab_rails['smtp_address'] = "mail.company.com"
+        gitlab_rails['smtp_port'] = 587
+        gitlab_rails['smtp_user_name'] = "${SMTP_USER_LOGIN}"
+        gitlab_rails['smtp_password'] = "${SMTP_USER_PASSWORD}"
+        gitlab_rails['smtp_domain'] = "company.com"
+        gitlab_rails['smtp_authentication'] = "login"
+        gitlab_rails['smtp_enable_starttls_auto'] = true
+        gitlab_rails['gitlab_email_from'] = "${GITLAB_EMAIL_FROM}"
+
+        gitlab_rails['ldap_enabled'] = true
+        gitlab_rails['prevent_ldap_sign_in'] = false
+        gitlab_rails['ldap_servers'] = YAML.load <<-'EOS'
+          main: 
+              label: 'company'
+              host: 'domain-controller.company.com'
+              port: 389
+              uid: 'sAMAccountName'
+              bind_dn: '${LDAP_USER_LOGIN}'
+              password: '${LDAP_USER_PASSWORD}'
+              encryption: 'plain'
+              verify_certificates: false
+              active_directory: true
+              allow_username_or_email_login: true
+              block_auto_created_users: false
+              base: 'OU=users,DC=company,DC=com'
+        EOS
+    ports:
+      - '5050:5050'
+      - '80:80'
+      - '443:443'
+      - '22:22'
+    volumes:
+      - '/etc/localtime:/etc/localtime:ro'
+      - '$GITLAB_STAND_HOME/gitlab/config:/etc/gitlab'
+      - '$GITLAB_STAND_HOME/gitlab/logs:/var/log/gitlab'
+      - '$GITLAB_STAND_HOME/gitlab/data:/var/opt/gitlab'
+      - '$GITLAB_STAND_HOME/certs/dhparam.pem:/etc/gitlab/ssl/dhparam.pem:ro'
+      - '$GITLAB_STAND_HOME/certs/ssl.crt:/etc/gitlab/ssl/${GITLAB_HOSTNAME}.crt:ro'
+      - '$GITLAB_STAND_HOME/certs/ssl.key:/etc/gitlab/ssl/${GITLAB_HOSTNAME}.key:ro'
+    shm_size: '256m'
+    networks:
+      backend_net:
+        aliases:
+          - gitlab
+        ipv4_address: 172.16.239.10
+      frontend_net:
+        ipv4_address: 172.16.238.10
+
+  postgresql:
+      image: 'postgres:${POSTGRES_VERSION}'
+      restart: always
+      container_name: postgresql
+      environment:
+        POSTGRES_USER: ${POSTGRES_USER}
+        POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+        POSTGRES_DB: ${POSTGRES_GITLAB_DB}
+      volumes:
+        - '$GITLAB_STAND_HOME/postgresql:/var/lib/postgresql/data:rw'
+      networks:
+        backend_net:
+          aliases:
+            - postgresql
+          ipv4_address: 172.16.239.11
+
+  redis:
+    image: 'redis:${REDIS_VERSION}'
+    restart: always
+    container_name: redis
+    volumes:
+      - '$GITLAB_STAND_HOME/redis:/data:rw'
+    networks:
+      backend_net:
+        aliases:
+          - redis
+        ipv4_address: 172.16.239.12
+
+  portainer-agent:
+    image: portainer/agent:${PORTAINER_AGENT_VERSION}
+    restart: unless-stopped
+    container_name: portainer-agent
+    ports:
+      - '9001:9001'
+    volumes:
+      - '/var/lib/docker/volumes:/var/lib/docker/volumes'
+      - '/var/run/docker.sock:/var/run/docker.sock'
+    networks:
+      frontend_net:
+        ipv4_address: 172.16.238.13
+
+  gitlab-runner:
+    container_name: gitlab-runner
+    image: gitlab/gitlab-runner:${GITLAB_RUNNER_VERSION}
+    restart: always
+    volumes:
+      - '/opt/gitlab-runner-stand/gitlab-runner/config:/etc/gitlab-runner'
+      - '/opt/gitlab-runner-stand/certs/ca.crt:/etc/gitlab-runner/certs/ca.crt:ro'
+      - '/home/$USER/.ssh/:/.ssh/'
+      - '/var/run/docker.sock:/var/run/docker.sock:rw'
+    environment:
+      - CI_SERVER_URL=https://${GITLAB_HOSTNAME}/ci
+    depends_on:
+      - gitlab
+    networks:
+      frontend_net:
+        aliases:
+          - gitlab-runner
+        ipv4_address: 172.16.238.14
+
+volumes:
+  postgresql_data:
+  redis_data:
+  portainer_data:
+  gitlab-runner_gitlab-runner:
+
+networks:
+  frontend_net:
+    external:
+      name: frontend_net
+  backend_net:
+    external:
+      name: backend_net
